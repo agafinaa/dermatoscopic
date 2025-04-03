@@ -1,6 +1,9 @@
+import PIL
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+import torchvision
+import transformers
 from torch import nn
 from ultralytics import YOLO
 import torchvision.transforms as transforms
@@ -8,6 +11,8 @@ from PIL import Image
 import torch.nn.functional as F
 import torch
 import torchvision.models as models
+from transformers import ViTForImageClassification
+from torchvision.transforms import InterpolationMode
 
 
 def detection(image_path, yolo_model):
@@ -81,6 +86,49 @@ def e_shaver_hair_removal(image):
     return inpainted, hair_mask
 
 
+class ViTWithMask(torch.nn.Module):
+    def __init__(self, vit_model):
+        super(ViTWithMask, self).__init__()
+        self.vit = vit_model
+
+    def forward(self, pixel_values, seg_mask=None):
+        # embeddings = self.vit.embeddings(pixel_values)
+        embeddings = self.vit.vit.embeddings(pixel_values)
+        if isinstance(embeddings, tuple):
+            embeddings = embeddings[0]
+
+        if seg_mask is not None:
+            patch_size = self.vit.config.patch_size
+            B, C, H, W = pixel_values.shape
+            new_H, new_W = H // patch_size, W // patch_size
+
+            seg_mask_resized = F.interpolate(seg_mask, size=(new_H, new_W), mode='nearest')
+            seg_mask_flat = seg_mask_resized.view(B, -1)
+            ones = torch.ones(B, 1, device=seg_mask_flat.device)
+            seg_mask_flat = torch.cat([ones, seg_mask_flat], dim=1)
+            seg_mask_flat = seg_mask_flat.float().unsqueeze(-1)
+            embeddings = embeddings * seg_mask_flat
+
+        # encoder_outputs = self.vit.encoder(embeddings)
+        encoder_outputs = self.vit.vit.encoder(embeddings)
+        if isinstance(encoder_outputs, tuple):
+            hidden_states = encoder_outputs[0]
+        else:
+            hidden_states = encoder_outputs.last_hidden_state
+
+        # cls_output = encoder_outputs[:, 0]
+        cls_output = hidden_states[:, 0]
+        if hasattr(self.vit, 'layernorm'):
+            cls_output = self.vit.layernorm(cls_output)
+        elif hasattr(self.vit, 'layer_norm'):
+            cls_output = self.vit.layer_norm(cls_output)
+        # else:
+        #    pass
+        # cls_output = self.vit.layernorm(cls_output)
+        logits = self.vit.classifier(cls_output)
+        return logits
+
+
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     num_classes = 1
@@ -148,6 +196,39 @@ def main():
     plt.imshow(blended)
     plt.axis('off')
     plt.show()
+
+    # Бинарная классификация
+    class_image_transform = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])])
+    class_mask_transform = transforms.Compose([
+        transforms.ToPILImage(),
+        # transforms.Resize((224, 224), interpolation=Image.NEAREST),
+        transforms.Resize((224, 224), interpolation=InterpolationMode.NEAREST),
+        transforms.ToTensor()])
+
+    model_name = 'google/vit-base-patch16-224-in21k'
+    model = ViTForImageClassification.from_pretrained(model_name, num_labels=2, ignore_mismatched_sizes=True)
+    model_with_mask = ViTWithMask(model)
+    state_dict = torch.load('vit_bin_class_with_masks_3.04.25.pth', map_location=torch.device('cpu'))
+    # print(state_dict.keys())
+    model_with_mask.load_state_dict(state_dict)
+    model_with_mask.eval()
+
+    hair_removed_rgb_transformed = class_image_transform(hair_removed_rgb).unsqueeze(0).to(device)
+    mask_transformed = class_mask_transform(mask).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        outputs = model_with_mask(hair_removed_rgb_transformed, seg_mask=mask_transformed)
+        probabilities = torch.softmax(outputs, dim=1)
+        _, pred = torch.max(outputs, 1)
+        pred = pred.item()
+        confidence = probabilities[0, pred].item()
+
+    class_names = {0: 'доброкачественное', 1: 'злокачественное'}
+    print(f'Классификация: {class_names[pred]} с точностью {confidence*100:.1f}%')
 
 
 if __name__ == '__main__':
