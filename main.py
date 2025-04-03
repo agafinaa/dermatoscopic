@@ -119,11 +119,11 @@ def main():
     plt.show()
 
     # Удаление волос (DullRazor)
-    '''hair_removed = dullrazor(cropped)
-    hair_removed_rgb = cv2.cvtColor(hair_removed, cv2.COLOR_BGR2RGB)'''
+    hair_removed = dullrazor(cropped)
+    hair_removed_rgb = cv2.cvtColor(hair_removed, cv2.COLOR_BGR2RGB)
 
-    result, mask = e_shaver_hair_removal(cropped)
-    hair_removed_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+    '''result, mask = e_shaver_hair_removal(cropped)
+    hair_removed_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)'''
     plt.figure(figsize=(8, 8))
     plt.title('Изображение после удаления волос (DullRazor)')
     plt.imshow(hair_removed_rgb)
@@ -132,13 +132,16 @@ def main():
 
     # Сегментация родинки
     seg_model.load_state_dict(torch.load('deeplabv3_15.03.25.pth', map_location=device))
-    mask = segmentation(cropped, seg_model, device)
+    # mask = segmentation(cropped, seg_model, device)
+    mask = segmentation(hair_removed_rgb, seg_model, device)
 
     # визуализация результата сегментации полупрозрачным синим цветом
-    overlay = cropped_rgb.copy()
+    # overlay = cropped_rgb.copy()
+    overlay = hair_removed_rgb.copy()
     overlay[mask == 1] = [0, 0, 255]
     alpha = 0.5
-    blended = cv2.addWeighted(cropped_rgb, 1 - alpha, overlay, alpha, 0)
+    # blended = cv2.addWeighted(cropped_rgb, 1 - alpha, overlay, alpha, 0)
+    blended = cv2.addWeighted(hair_removed_rgb, 1 - alpha, overlay, alpha, 0)
 
     plt.figure(figsize=(8, 8))
     plt.title('Результат сегментации родинки')
